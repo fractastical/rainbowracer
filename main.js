@@ -18,12 +18,27 @@ const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 document.body.appendChild(renderer.domElement);
 
+// Color schemes
+const colorSchemes = {
+    'rainbow1': [0xff0000, 0xff7700, 0xffff00, 0x00ff00, 0x0000ff, 0x8a2be2, 0xff00ff],
+    'rainbow2': [0xff00ff, 0x8a2be2, 0x0000ff, 0x00ff00, 0xffff00, 0xff7700, 0xff0000],
+    'blue_purple': [0x0000ff, 0x4b0082, 0x8a2be2, 0x9400d3, 0x800080],
+    'fire': [0xff0000, 0xff3300, 0xff6600, 0xff9900, 0xffcc00],
+    'green_cyan': [0x00ff00, 0x00ff33, 0x00ff66, 0x00ff99, 0x00ffcc],
+    'yellow_orange': [0xffff00, 0xffcc00, 0xff9900, 0xff6600, 0xff3300],
+    'finish': [0xffffff, 0x000000, 0xffffff, 0x000000]
+};
+
+// Create track generator
+const trackGenerator = new TrackGenerator(scene, colorSchemes);
+
 // Game objects
 let racerGroup;
 let checkpointObjects = [];
 let obstacles = [];
 let boostPads = [];
 let currentCourse = null;
+let currentTrackPath = null;
 
 // Physics (initialized from ship config)
 const physics = Object.assign({}, shipConfig.physics);
@@ -50,16 +65,6 @@ const keys = {
     ' ': false
 };
 
-// Color schemes
-const colorSchemes = {
-    'rainbow1': [0xff0000, 0xff7700, 0xffff00, 0x00ff00, 0x0000ff, 0x8a2be2, 0xff00ff],
-    'rainbow2': [0xff00ff, 0x8a2be2, 0x0000ff, 0x00ff00, 0xffff00, 0xff7700, 0xff0000],
-    'blue_purple': [0x0000ff, 0x4b0082, 0x8a2be2, 0x9400d3, 0x800080],
-    'fire': [0xff0000, 0xff3300, 0xff6600, 0xff9900, 0xffcc00],
-    'green_cyan': [0x00ff00, 0x00ff33, 0x00ff66, 0x00ff99, 0x00ffcc],
-    'yellow_orange': [0xffff00, 0xffcc00, 0xff9900, 0xff6600, 0xff3300],
-    'finish': [0xffffff, 0x000000, 0xffffff, 0x000000]
-};
 
 // Initialization
 function init() {
@@ -84,6 +89,23 @@ function init() {
             gameState.bestTimes[courseId] = [];
         }
     }
+    
+    // Set up track generator callbacks
+    trackGenerator.onObstacleCreated(obstacle => {
+        obstacles.push(obstacle);
+    });
+    
+    trackGenerator.onBoostPadCreated(boostPad => {
+        boostPads.push(boostPad);
+    });
+    
+    trackGenerator.onCheckpointCreated(checkpoint => {
+        checkpointObjects.push(checkpoint);
+    });
+    
+    trackGenerator.onFinishLineCreated(position => {
+        finishPosition = position;
+    });
     
     // Event listeners
     document.addEventListener('keydown', (e) => {
@@ -255,7 +277,7 @@ function updateBestTimesList() {
 
 // Load a course by ID
 function loadCourse(courseId) {
-    // Clear existing course
+    // Clear existing course and arrays
     clearCourse();
     
     // Set current course
@@ -265,7 +287,7 @@ function loadCourse(courseId) {
     // Update UI
     checkpointsElement.textContent = `Checkpoints: 0/${gameState.totalCheckpoints}`;
     
-    // Generate course
+    // Generate course using track generator
     generateCourse(currentCourse);
     
     // Create racer
@@ -280,25 +302,13 @@ function loadCourse(courseId) {
 
 // Clear existing course elements
 function clearCourse() {
-    // Remove all non-essential objects
-    const objectsToRemove = [];
-    scene.traverse(object => {
-        if (object.userData.courseElement || object === racerGroup) {
-            objectsToRemove.push(object);
-        }
-    });
+    // Clear track elements using track generator
+    trackGenerator.clearTrack();
     
-    objectsToRemove.forEach(object => {
-        scene.remove(object);
-        if (object.geometry) object.geometry.dispose();
-        if (object.material) {
-            if (Array.isArray(object.material)) {
-                object.material.forEach(material => material.dispose());
-            } else {
-                object.material.dispose();
-            }
-        }
-    });
+    // Remove racer
+    if (racerGroup) {
+        scene.remove(racerGroup);
+    }
     
     // Clear arrays
     checkpointObjects = [];
@@ -344,103 +354,18 @@ function generateCourse(courseData) {
         scene.add(centerpiece);
     }
     
-    // Create floor track
-    createTrack(courseData);
-    
-    // Create checkpoints
-    createCheckpoints(courseData.checkpoints);
-    
-    // Create obstacles if defined
-    createObstacles(courseData);
-    
-    // Create boost pads if defined
-    createBoostPads(courseData);
-    
-    // Create finish line
-    createFinishLine(courseData.finishPosition);
+    // Generate the track using track generator
+    currentTrackPath = trackGenerator.generateTrack(courseData);
     
     // Create particles
     createParticles();
 }
 
-// Create obstacles from course data
-function createObstacles(courseData) {
-    // Process all segments for obstacles
-    courseData.segments.forEach(segment => {
-        if (segment.obstacles && segment.obstacles.length > 0) {
-            segment.obstacles.forEach(obstacle => {
-                const barrierGeometry = new THREE.BoxGeometry(obstacle.width, 5, 2);
-                const barrierMaterial = new THREE.MeshStandardMaterial({
-                    color: 0xff0000,
-                    roughness: 0.1,
-                    metalness: 0.8,
-                    emissive: 0xff0000,
-                    emissiveIntensity: 0.5
-                });
-                
-                const barrier = new THREE.Mesh(barrierGeometry, barrierMaterial);
-                barrier.position.set(
-                    obstacle.position.x,
-                    obstacle.position.y + 2.5,
-                    obstacle.position.z
-                );
-                barrier.userData.courseElement = true;
-                
-                // Add to obstacles array for collision detection
-                obstacles.push({
-                    mesh: barrier,
-                    width: obstacle.width,
-                    position: new THREE.Vector3(
-                        obstacle.position.x,
-                        obstacle.position.y,
-                        obstacle.position.z
-                    )
-                });
-                
-                scene.add(barrier);
-            });
-        }
-    });
-}
-
-// Create boost pads from course data
-function createBoostPads(courseData) {
-    // Process all segments for boost pads
-    courseData.segments.forEach(segment => {
-        if (segment.boost && segment.boost.length > 0) {
-            segment.boost.forEach(boostPad => {
-                const boostGeometry = new THREE.PlaneGeometry(15, boostPad.length || 20);
-                const boostMaterial = new THREE.MeshBasicMaterial({
-                    color: 0x00ffff,
-                    transparent: true,
-                    opacity: 0.7,
-                    side: THREE.DoubleSide
-                });
-                
-                const boost = new THREE.Mesh(boostGeometry, boostMaterial);
-                boost.rotation.x = -Math.PI / 2;
-                boost.position.set(
-                    boostPad.position.x,
-                    boostPad.position.y - 0.9, // Slightly above track
-                    boostPad.position.z
-                );
-                boost.userData.courseElement = true;
-                
-                // Add to boostPads array for gameplay detection
-                boostPads.push({
-                    mesh: boost,
-                    position: new THREE.Vector3(
-                        boostPad.position.x,
-                        boostPad.position.y,
-                        boostPad.position.z
-                    ),
-                    length: boostPad.length || 20
-                });
-                
-                scene.add(boost);
-            });
-        }
-    });
+// Create particles
+function createParticles() {
+    // Use the star field effect from effects.js
+    const stars = effectsManager.createStarField();
+    scene.add(stars);
 }
 
 // Create centerpiece (floating hexagon, etc.)
@@ -484,171 +409,6 @@ function createCenterpiece(centerpieceData) {
     centerpiece.userData.rotationSpeed = centerpieceData.rotationSpeed || 0.01;
     
     return centerpiece;
-}
-
-// Create track and decorations
-function createTrack(courseData) {
-    // Track dimensions
-    const trackWidth = 30;
-    const trackLength = 1000;
-    
-    // Create basic floor
-    const floorGeometry = new THREE.PlaneGeometry(trackWidth, trackLength, 20, 100);
-    const floorMaterial = new THREE.MeshStandardMaterial({
-        vertexColors: true,
-        roughness: 0.1,
-        metalness: 0.8
-    });
-    
-    // Add rainbow colors to floor
-    const floorColors = [];
-    const positions = floorGeometry.attributes.position;
-    
-    for (let i = 0; i < positions.count; i++) {
-        const z = positions.getZ(i);
-        const segment = Math.floor(Math.abs(z) / 10) % colorSchemes.rainbow1.length;
-        const color = new THREE.Color(colorSchemes.rainbow1[segment]);
-        floorColors.push(color.r, color.g, color.b);
-    }
-    
-    floorGeometry.setAttribute('color', new THREE.Float32BufferAttribute(floorColors, 3));
-    
-    const floor = new THREE.Mesh(floorGeometry, floorMaterial);
-    floor.rotation.x = -Math.PI / 2;
-    floor.position.y = -1;
-    floor.position.z = -trackLength/2; // Center of course
-    floor.userData.courseElement = true;
-    scene.add(floor);
-    
-    // Add boundary walls and warning stripes
-    const boundaries = effectsManager.createBoundaryWalls(trackWidth, trackLength);
-    scene.add(boundaries);
-    
-    // Add decorative elements (cones) along the track
-    for (let i = 0; i < 40; i++) {
-        // Position cones just inside the boundaries
-        const leftCone = createCone(-trackWidth/2 + 2, -i * 20);
-        leftCone.userData.courseElement = true;
-        scene.add(leftCone);
-        
-        const rightCone = createCone(trackWidth/2 - 2, -i * 20);
-        rightCone.userData.courseElement = true;
-        scene.add(rightCone);
-    }
-}
-
-// Create a cone with rainbow colors
-function createCone(x, z) {
-    const height = 10 + Math.sin(z * 0.01) * 3;
-    const coneGeometry = new THREE.ConeGeometry(2, height, 3);
-    const colors = [];
-    
-    // Apply rainbow colors in segments
-    for (let i = 0; i < coneGeometry.attributes.position.count; i++) {
-        const y = coneGeometry.attributes.position.getY(i);
-        const segment = Math.floor(((y / height) + 0.5) * 7) % 7;
-        const color = new THREE.Color(colorSchemes.rainbow1[segment]);
-        colors.push(color.r, color.g, color.b);
-    }
-    
-    coneGeometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-    
-    const coneMaterial = new THREE.MeshStandardMaterial({
-        vertexColors: true,
-        roughness: 0.1,
-        metalness: 0.8
-    });
-    
-    const cone = new THREE.Mesh(coneGeometry, coneMaterial);
-    cone.position.set(x, 0, z);
-    cone.rotation.x = Math.PI;
-    
-    return cone;
-}
-
-// Create finish line
-function createFinishLine(position) {
-    if (!position) {
-        position = { x: 0, y: 0, z: -800 };
-    }
-    
-    // Create finish line with checkered pattern
-    const finishGeometry = new THREE.PlaneGeometry(30, 10, 8, 8);
-    const finishMaterial = new THREE.MeshBasicMaterial({
-        vertexColors: true,
-        side: THREE.DoubleSide
-    });
-    
-    // Create checkered pattern
-    const finishColors = [];
-    const finishPositions = finishGeometry.attributes.position;
-    
-    for (let i = 0; i < finishPositions.count; i++) {
-        const x = finishPositions.getX(i);
-        const y = finishPositions.getY(i);
-        
-        const xSegment = Math.floor((x + 15) / 3.75);
-        const ySegment = Math.floor((y + 5) / 1.25);
-        
-        const isWhite = (xSegment + ySegment) % 2 === 0;
-        const color = new THREE.Color(isWhite ? 0xffffff : 0x000000);
-        
-        finishColors.push(color.r, color.g, color.b);
-    }
-    
-    finishGeometry.setAttribute('color', new THREE.Float32BufferAttribute(finishColors, 3));
-    
-    const finishLine = new THREE.Mesh(finishGeometry, finishMaterial);
-    finishLine.rotation.x = -Math.PI / 2;
-    finishLine.position.set(position.x, -0.9, position.z);
-    finishLine.userData.courseElement = true;
-    
-    scene.add(finishLine);
-}
-
-// Create checkpoint markers
-function createCheckpoints(checkpointData) {
-    if (!checkpointData || checkpointData.length === 0) return;
-    
-    checkpointData.forEach((checkpoint, index) => {
-        const checkpointGeometry = new THREE.TorusGeometry(5, 0.5, 8, 24);
-        const checkpointMaterial = new THREE.MeshBasicMaterial({
-            color: 0x00ffff,
-            transparent: true,
-            opacity: 0.7
-        });
-        
-        const checkpointMarker = new THREE.Mesh(checkpointGeometry, checkpointMaterial);
-        checkpointMarker.position.set(
-            checkpoint.position.x,
-            checkpoint.position.y,
-            checkpoint.position.z
-        );
-        checkpointMarker.rotation.x = Math.PI / 2;
-        checkpointMarker.userData.courseElement = true;
-        
-        // Add to checkpoints array for collision detection
-        checkpointObjects.push({
-            mesh: checkpointMarker,
-            position: new THREE.Vector3(
-                checkpoint.position.x,
-                checkpoint.position.y,
-                checkpoint.position.z
-            ),
-            radius: checkpoint.radius || 5,
-            index: index,
-            passed: false
-        });
-        
-        scene.add(checkpointMarker);
-    });
-}
-
-// Create particles
-function createParticles() {
-    // Use the star field effect from effects.js
-    const stars = effectsManager.createStarField();
-    scene.add(stars);
 }
 
 // Create racer vehicle
@@ -700,11 +460,10 @@ function checkCheckpoints() {
 
 // Check finish line crossing
 function checkFinishLine() {
-    if (!gameState.started || gameState.finished) return;
+    if (!gameState.started || gameState.finished || !finishPosition) return;
     
     // Only allow finish if all checkpoints are passed
     if (gameState.checkpoints === gameState.totalCheckpoints) {
-        const finishPosition = currentCourse.finishPosition || { x: 0, z: -800 };
         const distance = Math.sqrt(
             Math.pow(racerGroup.position.x - finishPosition.x, 2) +
             Math.pow(racerGroup.position.z - finishPosition.z, 2)
@@ -760,28 +519,66 @@ function handleCollision(obstacle) {
 
 // Check for boundary collisions
 function checkBoundaryCollisions() {
-    if (!gameState.started || gameState.finished || gameState.collisionCooldown > 0) return;
+    if (!gameState.started || gameState.finished || gameState.collisionCooldown > 0 || !currentTrackPath) return;
     
-    // Check if racer is outside the track boundaries
-    if (Math.abs(racerGroup.position.x) > 14) {
-        // Collision with boundary
-        handleBoundaryCollision();
+    // Find the current segment of the track the racer is closest to
+    let closestSegmentIndex = 0;
+    let closestDistance = Infinity;
+    
+    for (let i = 0; i < currentTrackPath.length; i++) {
+        const point = currentTrackPath[i];
+        const distance = racerGroup.position.distanceTo(point.position);
+        
+        if (distance < closestDistance) {
+            closestDistance = distance;
+            closestSegmentIndex = i;
+        }
+    }
+    
+    // Get the closest track segment
+    const closestSegment = currentTrackPath[closestSegmentIndex];
+    if (!closestSegment || !closestSegment.segment) return;
+    
+    // Calculate how far the racer is from the track centerline
+    const trackWidth = closestSegment.segment.width || 30;
+    const halfWidth = trackWidth / 2;
+    
+    // Get perpendicular direction to the track
+    const perpendicular = new THREE.Vector3().crossVectors(
+        closestSegment.direction,
+        new THREE.Vector3(0, 1, 0)
+    ).normalize();
+    
+    // Project racer position onto perpendicular vector to get distance from centerline
+    const trackCenterline = closestSegment.position.clone();
+    const racerToCenter = new THREE.Vector3().subVectors(racerGroup.position, trackCenterline);
+    const distanceFromCenter = Math.abs(racerToCenter.dot(perpendicular));
+    
+    // If racer is outside track boundaries
+    if (distanceFromCenter > halfWidth - 1) {
+        handleBoundaryCollision(perpendicular, trackCenterline, halfWidth);
     }
 }
 
 // Handle collision with boundary
-function handleBoundaryCollision() {
+function handleBoundaryCollision(perpendicular, trackCenter, halfWidth) {
     // Slow down the racer
     physics.speed *= physics.boundarySlowdown;
     
     // Set collision cooldown
     gameState.collisionCooldown = physics.collisionRecoveryTime / 2;
     
-    // Push racer back into bounds (track width/2 = 15)
-    if (racerGroup.position.x > 14) {
-        racerGroup.position.x = 14;
-    } else if (racerGroup.position.x < -14) {
-        racerGroup.position.x = -14;
+    // Calculate direction from racer to track center
+    const racerToCenter = new THREE.Vector3().subVectors(trackCenter, racerGroup.position);
+    const projection = racerToCenter.dot(perpendicular);
+    
+    // Push racer back toward track centerline (slightly inside the boundary)
+    if (projection > 0) {
+        // Racer is to the left of centerline
+        racerGroup.position.add(perpendicular.clone().multiplyScalar(1));
+    } else {
+        // Racer is to the right of centerline
+        racerGroup.position.add(perpendicular.clone().multiplyScalar(-1));
     }
     
     // Apply boundary violation effects
@@ -831,7 +628,6 @@ function activateBoost() {
     }
 }
 
-// Finish the race
 // Finish the race
 function finishRace() {
     gameState.finished = true;
@@ -945,22 +741,44 @@ function handleControls() {
     const currentMaxSpeed = physics.isBoost ? physics.boostSpeed : physics.maxSpeed;
     if (physics.speed > currentMaxSpeed) physics.speed = currentMaxSpeed;
     
+    // Apply boundary speed limit if violation is active
+    if (gameState.boundaryViolation && gameState.boundaryPenaltyTime > 0) {
+        const maxAllowedSpeed = physics.maxSpeed * physics.boundarySpeedLimit;
+        if (physics.speed > maxAllowedSpeed) {
+            physics.speed = maxAllowedSpeed;
+        }
+    }
+    
     // Handle turning
     if ((moveLeft || moveRight) && Math.abs(physics.speed) > 0.1) {
         // Apply slight slowdown when turning
         physics.speed *= (1 - physics.turnDrag);
     }
     
-    // Move racer
-    racerGroup.position.z -= physics.speed;
+    // If we're not moving at all, skip the rest to avoid flashing
+    if (Math.abs(physics.speed) < 0.01) {
+        return;
+    }
     
-    // Turn racer
-    if (moveLeft) {
-        racerGroup.position.x -= physics.turnSpeed * physics.speed;
-        racerGroup.rotation.z = Math.min(racerGroup.rotation.z + 0.05, 0.3);
-    } else if (moveRight) {
-        racerGroup.position.x += physics.turnSpeed * physics.speed;
-        racerGroup.rotation.z = Math.max(racerGroup.rotation.z - 0.05, -0.3);
+    // SIMPLIFIED MOVEMENT: Use a more consistent approach that doesn't rely on track path alignment
+    // This avoids the flashing issues caused by direction changes
+    
+    // Simple forward/backward movement in the direction the racer is facing
+    const forwardDirection = new THREE.Vector3(0, 0, -1).applyQuaternion(racerGroup.quaternion);
+    racerGroup.position.add(forwardDirection.multiplyScalar(physics.speed));
+    
+    // Apply lateral movement (left/right)
+    if (moveLeft || moveRight) {
+        // Get the right vector (perpendicular to forward direction)
+        const rightVector = new THREE.Vector3(1, 0, 0).applyQuaternion(racerGroup.quaternion);
+        
+        if (moveLeft) {
+            racerGroup.position.sub(rightVector.multiplyScalar(physics.turnSpeed * Math.abs(physics.speed)));
+            racerGroup.rotation.z = Math.min(racerGroup.rotation.z + 0.05, 0.3);
+        } else { // moveRight
+            racerGroup.position.add(rightVector.multiplyScalar(physics.turnSpeed * Math.abs(physics.speed)));
+            racerGroup.rotation.z = Math.max(racerGroup.rotation.z - 0.05, -0.3);
+        }
     } else {
         // Return to center rotation when not turning
         if (racerGroup.rotation.z > 0) {
@@ -969,6 +787,29 @@ function handleControls() {
         } else if (racerGroup.rotation.z < 0) {
             racerGroup.rotation.z += 0.02;
             if (racerGroup.rotation.z > 0) racerGroup.rotation.z = 0;
+        }
+    }
+    
+    // Optional: If you want to keep the racer on the track, find the closest point
+    // and adjust height/position slightly, but don't completely override movement
+    if (currentTrackPath && currentTrackPath.length > 0) {
+        let closestPointIndex = 0;
+        let closestDistance = Infinity;
+        
+        for (let i = 0; i < currentTrackPath.length; i++) {
+            const distance = racerGroup.position.distanceTo(currentTrackPath[i].position);
+            if (distance < closestDistance) {
+                closestDistance = distance;
+                closestPointIndex = i;
+            }
+        }
+        
+        // Get the closest point
+        const closestPoint = currentTrackPath[closestPointIndex];
+        
+        // Only adjust the Y position to keep the racer at the right height
+        if (closestPoint) {
+            racerGroup.position.y = closestPoint.position.y + 1; // +1 for height above track
         }
     }
 }

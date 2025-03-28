@@ -1,5 +1,5 @@
 // Main.js - Rainbow Racing Game
-// Works with predefined courses from course.js
+// Works with predefined courses from course.js and ship from ship.js
 
 // DOM Elements
 const timerElement = document.getElementById('timer');
@@ -20,11 +20,13 @@ document.body.appendChild(renderer.domElement);
 
 // Game objects
 let racerGroup;
-let engineFire1, engineFire2;
 let checkpointObjects = [];
 let obstacles = [];
 let boostPads = [];
 let currentCourse = null;
+
+// Physics (initialized from ship config)
+const physics = Object.assign({}, shipConfig.physics);
 
 // Game state
 const gameState = {
@@ -35,7 +37,8 @@ const gameState = {
     currentTime: 0,
     checkpoints: 0,
     totalCheckpoints: 0,
-    bestTimes: {}
+    bestTimes: {},
+    collisionCooldown: 0
 };
 
 // Controls
@@ -43,21 +46,6 @@ const keys = {
     w: false, a: false, s: false, d: false,
     ArrowUp: false, ArrowDown: false, ArrowLeft: false, ArrowRight: false,
     ' ': false
-};
-
-// Physics
-const physics = {
-    speed: 0,
-    maxSpeed: 2,
-    acceleration: 0.02,
-    deceleration: 0.01,
-    turnSpeed: 0.05,
-    boostSpeed: 3,
-    isBoost: false,
-    boostTime: 0,
-    maxBoostTime: 60,
-    boostCooldown: 0,
-    maxBoostCooldown: 180
 };
 
 // Color schemes
@@ -73,6 +61,9 @@ const colorSchemes = {
 
 // Initialization
 function init() {
+    // Create ship display
+    shipConfig.createDisplay();
+    
     // Populate course dropdown
     for (const courseId in courses) {
         const option = document.createElement('option');
@@ -173,9 +164,16 @@ function resetRace() {
     gameState.finished = false;
     gameState.currentTime = 0;
     gameState.checkpoints = 0;
+    gameState.collisionCooldown = 0;
     timerElement.textContent = '00:00.000';
     
-    // Reset racer position and physics
+    // Reset physics
+    physics.speed = 0;
+    physics.isBoost = false;
+    physics.boostTime = 0;
+    physics.boostCooldown = 0;
+    
+    // Reset racer position
     if (racerGroup) {
         racerGroup.position.set(
             currentCourse.startPosition.x,
@@ -183,11 +181,10 @@ function resetRace() {
             currentCourse.startPosition.z
         );
         racerGroup.rotation.set(0, 0, 0);
-        physics.speed = 0;
-        physics.isBoost = false;
-        physics.boostTime = 0;
-        physics.boostCooldown = 0;
     }
+    
+    // Update ship display
+    shipConfig.updateDisplay(physics);
     
     // Reset checkpoints
     checkpointObjects.forEach(checkpoint => {
@@ -349,11 +346,97 @@ function generateCourse(courseData) {
     // Create checkpoints
     createCheckpoints(courseData.checkpoints);
     
+    // Create obstacles if defined
+    createObstacles(courseData);
+    
+    // Create boost pads if defined
+    createBoostPads(courseData);
+    
     // Create finish line
     createFinishLine(courseData.finishPosition);
     
     // Create particles
     createParticles();
+}
+
+// Create obstacles from course data
+function createObstacles(courseData) {
+    // Process all segments for obstacles
+    courseData.segments.forEach(segment => {
+        if (segment.obstacles && segment.obstacles.length > 0) {
+            segment.obstacles.forEach(obstacle => {
+                const barrierGeometry = new THREE.BoxGeometry(obstacle.width, 5, 2);
+                const barrierMaterial = new THREE.MeshStandardMaterial({
+                    color: 0xff0000,
+                    roughness: 0.1,
+                    metalness: 0.8,
+                    emissive: 0xff0000,
+                    emissiveIntensity: 0.5
+                });
+                
+                const barrier = new THREE.Mesh(barrierGeometry, barrierMaterial);
+                barrier.position.set(
+                    obstacle.position.x,
+                    obstacle.position.y + 2.5,
+                    obstacle.position.z
+                );
+                barrier.userData.courseElement = true;
+                
+                // Add to obstacles array for collision detection
+                obstacles.push({
+                    mesh: barrier,
+                    width: obstacle.width,
+                    position: new THREE.Vector3(
+                        obstacle.position.x,
+                        obstacle.position.y,
+                        obstacle.position.z
+                    )
+                });
+                
+                scene.add(barrier);
+            });
+        }
+    });
+}
+
+// Create boost pads from course data
+function createBoostPads(courseData) {
+    // Process all segments for boost pads
+    courseData.segments.forEach(segment => {
+        if (segment.boost && segment.boost.length > 0) {
+            segment.boost.forEach(boostPad => {
+                const boostGeometry = new THREE.PlaneGeometry(15, boostPad.length || 20);
+                const boostMaterial = new THREE.MeshBasicMaterial({
+                    color: 0x00ffff,
+                    transparent: true,
+                    opacity: 0.7,
+                    side: THREE.DoubleSide
+                });
+                
+                const boost = new THREE.Mesh(boostGeometry, boostMaterial);
+                boost.rotation.x = -Math.PI / 2;
+                boost.position.set(
+                    boostPad.position.x,
+                    boostPad.position.y - 0.9, // Slightly above track
+                    boostPad.position.z
+                );
+                boost.userData.courseElement = true;
+                
+                // Add to boostPads array for gameplay detection
+                boostPads.push({
+                    mesh: boost,
+                    position: new THREE.Vector3(
+                        boostPad.position.x,
+                        boostPad.position.y,
+                        boostPad.position.z
+                    ),
+                    length: boostPad.length || 20
+                });
+                
+                scene.add(boost);
+            });
+        }
+    });
 }
 
 // Create centerpiece (floating hexagon, etc.)
@@ -394,7 +477,7 @@ function createCenterpiece(centerpieceData) {
     );
     
     // Store animation info
-    centerpiece.userData.rotationSpeed = 0.01;
+    centerpiece.userData.rotationSpeed = centerpieceData.rotationSpeed || 0.01;
     
     return centerpiece;
 }
@@ -450,12 +533,12 @@ function createCone(x, z) {
     const colors = [];
     
     // Apply rainbow colors in segments
-    for (let i = 0; i < coneGeometry.attributes.position.count; i++) {
-        const y = coneGeometry.attributes.position.getY(i);
-        const segment = Math.floor(((y / height) + 0.5) * 7) % 7;
-        const color = new THREE.Color(colorSchemes.rainbow1[segment]);
-        colors.push(color.r, color.g, color.b);
-    }
+	for (let i = 0; i < coneGeometry.attributes.position.count; i++) {
+	        const y = coneGeometry.attributes.position.getY(i);
+	        const segment = Math.floor(((y / height) + 0.5) * 7) % 7;
+	        const color = new THREE.Color(colorSchemes.rainbow1[segment]);
+	        colors.push(color.r, color.g, color.b);
+	    }
     
     coneGeometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
     
@@ -588,60 +671,8 @@ function createParticles() {
 
 // Create racer vehicle
 function createRacer() {
-    racerGroup = new THREE.Group();
-    
-    // Pod (central part)
-    const podGeometry = new THREE.SphereGeometry(1, 16, 12);
-    const podMaterial = new THREE.MeshStandardMaterial({
-        color: 0xcccccc,
-        roughness: 0.3,
-        metalness: 0.7
-    });
-    const pod = new THREE.Mesh(podGeometry, podMaterial);
-    pod.scale.set(1, 0.7, 1.5); // Scale to make it oval
-    racerGroup.add(pod);
-    
-    // Engines
-    const engine1Geometry = new THREE.CylinderGeometry(0.5, 0.7, 3, 8);
-    const engineMaterial = new THREE.MeshStandardMaterial({
-        color: 0x555555,
-        roughness: 0.5,
-        metalness: 0.8
-    });
-    const engine1 = new THREE.Mesh(engine1Geometry, engineMaterial);
-    engine1.position.set(-2, -0.5, 0);
-    engine1.rotation.z = Math.PI / 2;
-    racerGroup.add(engine1);
-    
-    const engine2 = engine1.clone();
-    engine2.position.set(2, -0.5, 0);
-    racerGroup.add(engine2);
-    
-    // Engine fire
-    const engineFireMaterial = new THREE.MeshBasicMaterial({color: 0xff3300});
-    engineFire1 = new THREE.Mesh(new THREE.ConeGeometry(0.5, 2, 8), engineFireMaterial);
-    engineFire1.position.set(-3.5, -0.5, 0);
-    engineFire1.rotation.z = -Math.PI / 2;
-    racerGroup.add(engineFire1);
-    
-    engineFire2 = engineFire1.clone();
-    engineFire2.position.set(3.5, -0.5, 0);
-    racerGroup.add(engineFire2);
-    
-    // Connectors
-    const connector1Geometry = new THREE.BoxGeometry(1.5, 0.2, 0.2);
-    const connectorMaterial = new THREE.MeshStandardMaterial({
-        color: 0x999999,
-        roughness: 0.3,
-        metalness: 0.7
-    });
-    const connector1 = new THREE.Mesh(connector1Geometry, connectorMaterial);
-    connector1.position.set(-1, -0.5, 0);
-    racerGroup.add(connector1);
-    
-    const connector2 = connector1.clone();
-    connector2.position.set(1, -0.5, 0);
-    racerGroup.add(connector2);
+    // Use the ship model from ship config
+    racerGroup = shipConfig.createModel();
     
     // Position racer at start position
     racerGroup.position.set(
@@ -703,6 +734,118 @@ function checkFinishLine() {
     }
 }
 
+// Check for collision with obstacles
+function checkObstacleCollisions() {
+    if (!gameState.started || gameState.finished || obstacles.length === 0 || gameState.collisionCooldown > 0) return;
+    
+    obstacles.forEach(obstacle => {
+        const distance = Math.sqrt(
+            Math.pow(racerGroup.position.x - obstacle.position.x, 2) +
+            Math.pow(racerGroup.position.z - obstacle.position.z, 2)
+        );
+        
+        const collisionThreshold = obstacle.width / 2 + 1.5; // Racer width ~= 3
+        
+        if (distance < collisionThreshold) {
+            // Collision with obstacle
+            handleCollision(obstacle);
+        }
+    });
+}
+
+// Check for boundary collisions
+function checkBoundaryCollisions() {
+    if (!gameState.started || gameState.finished || gameState.collisionCooldown > 0) return;
+    
+    // Check if racer is outside the track boundaries
+    if (Math.abs(racerGroup.position.x) > 14) {
+        // Collision with boundary
+        handleBoundaryCollision();
+    }
+}
+
+// Handle collision with obstacle
+function handleCollision(obstacle) {
+    // Slow down the racer
+    physics.speed *= physics.collisionSlowdown;
+    
+    // Set collision cooldown to prevent multiple collisions
+    gameState.collisionCooldown = physics.collisionRecoveryTime;
+    
+    // Visual feedback
+    if (obstacle.mesh) {
+        obstacle.mesh.material.emissiveIntensity = 1.0;
+        // Reset after a short time
+        setTimeout(() => {
+            if (obstacle.mesh) {
+                obstacle.mesh.material.emissiveIntensity = 0.5;
+            }
+        }, 300);
+    }
+    
+    // Apply "bounce" effect
+    racerGroup.position.z += physics.speed;
+}
+
+// Handle collision with boundary
+function handleBoundaryCollision() {
+    // Slow down the racer
+    physics.speed *= physics.boundarySlowdown;
+    
+    // Set collision cooldown
+    gameState.collisionCooldown = physics.collisionRecoveryTime / 2;
+    
+    // Push racer back into bounds
+    if (racerGroup.position.x > 14) {
+        racerGroup.position.x = 14;
+    } else if (racerGroup.position.x < -14) {
+        racerGroup.position.x = -14;
+    }
+}
+
+// Check for boost pad activation
+function checkBoostPads() {
+    if (!gameState.started || gameState.finished || boostPads.length === 0) return;
+    
+    boostPads.forEach(boostPad => {
+        const distance = Math.sqrt(
+            Math.pow(racerGroup.position.x - boostPad.position.x, 2) +
+            Math.pow(racerGroup.position.z - boostPad.position.z, 2)
+        );
+        
+        const activationThreshold = 7; // Approximate width of boost pad
+        
+        if (distance < activationThreshold && !physics.isBoost) {
+            // Activate boost
+            activateBoost();
+            
+            // Visual feedback on the boost pad
+            if (boostPad.mesh) {
+                const originalColor = boostPad.mesh.material.color.getHex();
+                boostPad.mesh.material.color.set(0xffffff);
+                // Reset after a short time
+                setTimeout(() => {
+                    if (boostPad.mesh) {
+                        boostPad.mesh.material.color.setHex(originalColor);
+                    }
+                }, 300);
+            }
+        }
+    });
+}
+
+// Activate boost
+function activateBoost() {
+    physics.isBoost = true;
+    physics.boostTime = physics.maxBoostTime;
+    
+    // Apply immediate speed boost
+    physics.speed += physics.boostAcceleration * 5;
+    if (physics.speed > physics.boostSpeed) {
+        physics.speed = physics.boostSpeed;
+    }
+}
+
 // Finish the race
 function finishRace() {
     gameState.finished = true;
@@ -727,11 +870,31 @@ function animate() {
     // Handle keyboard controls
     handleControls();
     
+    // Update ship display
+    shipConfig.updateDisplay(physics);
+    
+    // Update ship thrusters
+    if (racerGroup) {
+        shipConfig.updateThrust(racerGroup, physics);
+    }
+    
+    // Check for collisions
+    checkObstacleCollisions();
+    checkBoundaryCollisions();
+    
+    // Update collision cooldown
+    if (gameState.collisionCooldown > 0) {
+        gameState.collisionCooldown--;
+    }
+    
     // Check checkpoint collisions
     checkCheckpoints();
     
     // Check finish line
     checkFinishLine();
+    
+    // Check boost pads
+    checkBoostPads();
     
     // Animate centerpiece
     scene.traverse(object => {
@@ -746,22 +909,26 @@ function animate() {
 
 // Handle keyboard controls
 function handleControls() {
-    if (!racerGroup) return;
+    if (!racerGroup || gameState.finished) return;
     
     const moveForward = keys.w || keys.ArrowUp;
     const moveBackward = keys.s || keys.ArrowDown;
     const moveLeft = keys.a || keys.ArrowLeft;
     const moveRight = keys.d || keys.ArrowRight;
     const boost = keys[' '];
+    const brake = keys.s || keys.ArrowDown;
     
-    // Update speed
+    // Update speed based on controls
     if (moveForward) {
+        // Accelerate forward
         physics.speed += physics.acceleration;
         if (physics.speed > physics.maxSpeed) physics.speed = physics.maxSpeed;
-    } else if (moveBackward) {
-        physics.speed -= physics.acceleration * 1.5;
+    } else if (brake) {
+        // Apply brakes
+        physics.speed -= physics.brakingForce;
         if (physics.speed < -physics.maxSpeed / 2) physics.speed = -physics.maxSpeed / 2;
     } else {
+        // Natural deceleration
         if (physics.speed > 0) {
             physics.speed -= physics.deceleration;
             if (physics.speed < 0) physics.speed = 0;
@@ -773,12 +940,7 @@ function handleControls() {
     
     // Handle boost
     if (boost && physics.boostCooldown === 0 && !physics.isBoost) {
-        physics.isBoost = true;
-        physics.boostTime = physics.maxBoostTime;
-        
-        // Change engine fire color during boost
-        engineFire1.material.color.set(0x00ffff);
-        engineFire2.material.color.set(0x00ffff);
+        activateBoost();
     }
     
     if (physics.isBoost) {
@@ -786,10 +948,6 @@ function handleControls() {
         if (physics.boostTime <= 0) {
             physics.isBoost = false;
             physics.boostCooldown = physics.maxBoostCooldown;
-            
-            // Change engine fire color back
-            engineFire1.material.color.set(0xff3300);
-            engineFire2.material.color.set(0xff3300);
         }
     }
     
@@ -797,15 +955,20 @@ function handleControls() {
         physics.boostCooldown--;
     }
     
-    // Apply boost speed
+    // Apply boost speed cap
     const currentMaxSpeed = physics.isBoost ? physics.boostSpeed : physics.maxSpeed;
     if (physics.speed > currentMaxSpeed) physics.speed = currentMaxSpeed;
+    
+    // Handle turning
+    if ((moveLeft || moveRight) && Math.abs(physics.speed) > 0.1) {
+        // Apply slight slowdown when turning
+        physics.speed *= (1 - physics.turnDrag);
+    }
     
     // Move racer
     racerGroup.position.z -= physics.speed;
     
     // Turn racer
-// Turn racer
     if (moveLeft) {
         racerGroup.position.x -= physics.turnSpeed * physics.speed;
         racerGroup.rotation.z = Math.min(racerGroup.rotation.z + 0.05, 0.3);
@@ -822,81 +985,6 @@ function handleControls() {
             if (racerGroup.rotation.z > 0) racerGroup.rotation.z = 0;
         }
     }
-    
-    // Limit racer position to track bounds
-    if (racerGroup.position.x < -14) racerGroup.position.x = -14;
-    if (racerGroup.position.x > 14) racerGroup.position.x = 14;
-    
-    // Update engine fire size based on speed
-    const fireScale = 0.5 + physics.speed / physics.maxSpeed;
-    engineFire1.scale.set(fireScale, 1 + fireScale, fireScale);
-    engineFire2.scale.set(fireScale, 1 + fireScale, fireScale);
-}
-
-// Check for collision with obstacles
-function checkObstacleCollisions() {
-    if (!gameState.started || gameState.finished || obstacles.length === 0) return;
-    
-    obstacles.forEach(obstacle => {
-        const distance = Math.sqrt(
-            Math.pow(racerGroup.position.x - obstacle.position.x, 2) +
-            Math.pow(racerGroup.position.z - obstacle.position.z, 2)
-        );
-        
-        const collisionThreshold = obstacle.width / 2 + 1.5; // Racer width ~= 3
-        
-        if (distance < collisionThreshold) {
-            // Collision detected - slow down the racer
-            physics.speed *= 0.5;
-            
-            // Visual feedback
-            if (obstacle.mesh) {
-                obstacle.mesh.material.emissiveIntensity = 1.0;
-                // Reset after a short time
-                setTimeout(() => {
-                    if (obstacle.mesh) {
-                        obstacle.mesh.material.emissiveIntensity = 0.5;
-                    }
-                }, 300);
-            }
-        }
-    });
-}
-
-// Check for boost pad activation
-function checkBoostPads() {
-    if (!gameState.started || gameState.finished || boostPads.length === 0) return;
-    
-    boostPads.forEach(boostPad => {
-        const distance = Math.sqrt(
-            Math.pow(racerGroup.position.x - boostPad.position.x, 2) +
-            Math.pow(racerGroup.position.z - boostPad.position.z, 2)
-        );
-        
-        const activationThreshold = 7; // Approximate width of boost pad
-        
-        if (distance < activationThreshold && !physics.isBoost) {
-            // Activate boost
-            physics.isBoost = true;
-            physics.boostTime = physics.maxBoostTime;
-            
-            // Change engine fire color during boost
-            engineFire1.material.color.set(0x00ffff);
-            engineFire2.material.color.set(0x00ffff);
-            
-            // Visual feedback on the boost pad
-            if (boostPad.mesh) {
-                const originalColor = boostPad.mesh.material.color.getHex();
-                boostPad.mesh.material.color.set(0xffffff);
-                // Reset after a short time
-                setTimeout(() => {
-                    if (boostPad.mesh) {
-                        boostPad.mesh.material.color.setHex(originalColor);
-                    }
-                }, 300);
-            }
-        }
-    });
 }
 
 // Start the game

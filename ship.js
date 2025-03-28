@@ -10,6 +10,10 @@ const shipPhysics = {
     deceleration: 0.01,
     brakingForce: 0.04,    // How quickly the ship slows down when braking
     
+    boundarySlowdown: 0.3,  // How much speed is retained when hitting boundary
+    boundaryPenaltyTime: 45,  // Frames where speed is limited after boundary hit
+    boundarySpeedLimit: 0.5,  // Max speed after boundary violation as fraction of normal
+
     // Turning parameters
     turnSpeed: 0.05,
     turnDrag: 0.02,        // How much turning slows the ship

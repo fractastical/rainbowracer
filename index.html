@@ -1,425 +1,96 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Three.js Rainbow Racing</title>
+    <title>Rainbow Racing</title>
     <style>
-        body { margin: 0; overflow: hidden; }
+        body { margin: 0; overflow: hidden; background: #000; }
         canvas { display: block; }
-        #instructions {
+        #ui {
             position: absolute;
             top: 10px;
             left: 10px;
-            background: rgba(0,0,0,0.5);
+            background: rgba(0,0,0,0.7);
             color: white;
             padding: 10px;
             border-radius: 5px;
             font-family: Arial, sans-serif;
+            min-width: 200px;
+        }
+        #timer {
+            font-size: 24px;
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+        #instructions {
+            font-size: 14px;
+            margin-bottom: 10px;
+        }
+        #checkpoints {
+            font-size: 14px;
+            margin-bottom: 10px;
+        }
+        #best-times {
+            margin-top: 20px;
+        }
+        #best-times h3 {
+            margin: 0 0 5px 0;
+            font-size: 16px;
+        }
+        .best-time {
+            font-size: 14px;
+            margin-bottom: 3px;
+        }
+        #save-time {
+            margin-top: 10px;
+            padding: 5px 10px;
+            background: #4CAF50;
+            border: none;
+            color: white;
+            cursor: pointer;
+            border-radius: 3px;
+            display: none;
+        }
+        #name-input {
+            margin-top: 5px;
+            padding: 5px;
+            display: none;
+        }
+        #course-select {
+            margin-top: 10px;
+        }
+        #reset-button {
+            margin-top: 10px;
+            padding: 5px 10px;
+            background: #f44336;
+            border: none;
+            color: white;
+            cursor: pointer;
+            border-radius: 3px;
         }
     </style>
 </head>
 <body>
-    <div id="instructions">
-        WASD or Arrow Keys to move<br>
-        Space to boost
+    <div id="ui">
+        <div id="timer">00:00.000</div>
+        <div id="instructions">WASD or Arrow Keys to move<br>Space to boost</div>
+        <div id="checkpoints">Checkpoints: 0/0</div>
+        <div id="best-times">
+            <h3>Best Times</h3>
+            <div id="times-list"></div>
+        </div>
+        <input type="text" id="name-input" placeholder="Enter your name" maxlength="20">
+        <button id="save-time">Save Time</button>
+        <div id="course-select">
+            <select id="course-dropdown"></select>
+            <button id="load-course">Load Course</button>
+        </div>
+        <button id="reset-button">Reset Race</button>
     </div>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-    <script>
-        // Set up scene, camera, and renderer
-        const scene = new THREE.Scene();
-        scene.background = new THREE.Color(0x000000);
-        
-        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 2000);
-        
-        const renderer = new THREE.WebGLRenderer({ antialias: true });
-        renderer.setSize(window.innerWidth, window.innerHeight);
-        document.body.appendChild(renderer.domElement);
-        
-        // Lighting
-        const ambientLight = new THREE.AmbientLight(0x333333);
-        scene.add(ambientLight);
-        
-        const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
-        directionalLight.position.set(5, 10, 7.5);
-        scene.add(directionalLight);
-        
-        // Add point lights for neon effect
-        const colors = [0xff0000, 0xff7700, 0xffff00, 0x00ff00, 0x0000ff, 0x8a2be2, 0xff00ff];
-        const pointLights = [];
-        
-        for (let i = 0; i < 7; i++) {
-            const light = new THREE.PointLight(colors[i], 1, 100);
-            light.position.set(
-                Math.sin(i * 0.5) * 20,
-                5,
-                -i * 10
-            );
-            scene.add(light);
-            pointLights.push(light);
-        }
-        
-        // Create rainbow floor with segments
-        const floorGeometry = new THREE.PlaneGeometry(30, 2000, 20, 200);
-        const floorMaterial = new THREE.MeshStandardMaterial({
-            vertexColors: true,
-            roughness: 0.1,
-            metalness: 0.8
-        });
-        
-        // Add rainbow colors to floor
-        const floorColors = [];
-        const positions = floorGeometry.attributes.position;
-        
-        for (let i = 0; i < positions.count; i++) {
-            const z = positions.getZ(i);
-            const segment = Math.floor(Math.abs(z) / 10) % colors.length;
-            const color = new THREE.Color(colors[segment]);
-            floorColors.push(color.r, color.g, color.b);
-        }
-        
-        floorGeometry.setAttribute('color', new THREE.Float32BufferAttribute(floorColors, 3));
-        
-        const floor = new THREE.Mesh(floorGeometry, floorMaterial);
-        floor.rotation.x = -Math.PI / 2;
-        floor.position.y = -1;
-        scene.add(floor);
-        
-        // Create triangular cones on the sides
-        const numCones = 100;
-        const cones = [];
-        
-        function createCone(x, z, height, segments) {
-            const coneGeometry = new THREE.ConeGeometry(2, height, 3);
-            const colors = [];
-            
-            // Apply rainbow colors in segments
-            for (let i = 0; i < coneGeometry.attributes.position.count; i++) {
-                const y = coneGeometry.attributes.position.getY(i);
-                const segment = Math.floor(((y / height) + 0.5) * segments) % 7;
-                const color = new THREE.Color(this.colors[segment]);
-                colors.push(color.r, color.g, color.b);
-            }
-            
-            coneGeometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-            
-            const coneMaterial = new THREE.MeshStandardMaterial({
-                vertexColors: true,
-                roughness: 0.1,
-                metalness: 0.8
-            });
-            
-            const cone = new THREE.Mesh(coneGeometry, coneMaterial);
-            cone.position.set(x, 0, z);
-            cone.rotation.x = Math.PI;
-            scene.add(cone);
-            return cone;
-        }
-        
-        for (let i = 0; i < numCones; i++) {
-            const leftCone = createCone.call({colors}, -15, -i * 20, 10 + Math.sin(i * 0.2) * 5, 7);
-            const rightCone = createCone.call({colors}, 15, -i * 20, 10 + Math.sin(i * 0.2) * 5, 7);
-            cones.push(leftCone, rightCone);
-        }
-        
-        // Create the floating hexagon
-        const hexagonGeometry = new THREE.BoxGeometry(10, 10, 10);
-        const hexColors = [];
-        
-        for (let i = 0; i < hexagonGeometry.attributes.position.count; i++) {
-            const y = hexagonGeometry.attributes.position.getY(i);
-            const normalizedY = (y + 5) / 10; // Normalize to 0-1 range
-            const segment = Math.floor(normalizedY * colors.length);
-            const color = new THREE.Color(colors[Math.min(segment, colors.length - 1)]);
-            hexColors.push(color.r, color.g, color.b);
-        }
-        
-        hexagonGeometry.setAttribute('color', new THREE.Float32BufferAttribute(hexColors, 3));
-        
-        const hexagonMaterial = new THREE.MeshStandardMaterial({
-            vertexColors: true,
-            roughness: 0.1,
-            metalness: 0.8
-        });
-        
-        const hexagon = new THREE.Mesh(hexagonGeometry, hexagonMaterial);
-        hexagon.position.set(0, 20, -1000);
-        scene.add(hexagon);
-        
-        // Create particles in the background
-        const particlesGeometry = new THREE.BufferGeometry();
-        const particleCount = 2000;
-        
-        const posArray = new Float32Array(particleCount * 3);
-        const colorArray = new Float32Array(particleCount * 3);
-        
-        for (let i = 0; i < particleCount * 3; i += 3) {
-            // Position
-            posArray[i] = (Math.random() - 0.5) * 100;
-            posArray[i + 1] = (Math.random() - 0.5) * 100;
-            posArray[i + 2] = (Math.random() - 0.5) * 1000;
-            
-            // Color - rainbow colors
-            const colorIndex = Math.floor(Math.random() * colors.length);
-            const color = new THREE.Color(colors[colorIndex]);
-            colorArray[i] = color.r;
-            colorArray[i + 1] = color.g;
-            colorArray[i + 2] = color.b;
-        }
-        
-        particlesGeometry.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
-        particlesGeometry.setAttribute('color', new THREE.BufferAttribute(colorArray, 3));
-        
-        const particlesMaterial = new THREE.PointsMaterial({
-            size: 0.5,
-            vertexColors: true,
-            transparent: true
-        });
-        
-        const particlesMesh = new THREE.Points(particlesGeometry, particlesMaterial);
-        scene.add(particlesMesh);
-        
-        // Create racer vehicle (similar to Star Wars pod racer)
-        const racerGroup = new THREE.Group();
-        
-        // Create pod
-        const podGeometry = new THREE.CapsuleGeometry(1, 2, 4, 8);
-        const podMaterial = new THREE.MeshStandardMaterial({
-            color: 0xcccccc,
-            roughness: 0.3,
-            metalness: 0.7
-        });
-        const pod = new THREE.Mesh(podGeometry, podMaterial);
-        pod.rotation.z = Math.PI / 2;
-        racerGroup.add(pod);
-        
-        // Create engines
-        const engine1Geometry = new THREE.CylinderGeometry(0.5, 0.7, 3, 8);
-        const engineMaterial = new THREE.MeshStandardMaterial({
-            color: 0x555555,
-            roughness: 0.5,
-            metalness: 0.8
-        });
-        const engine1 = new THREE.Mesh(engine1Geometry, engineMaterial);
-        engine1.position.set(-2, -0.5, 0);
-        engine1.rotation.z = Math.PI / 2;
-        racerGroup.add(engine1);
-        
-        const engine2 = engine1.clone();
-        engine2.position.set(2, -0.5, 0);
-        racerGroup.add(engine2);
-        
-        // Create engine fire
-        const engineFireMaterial = new THREE.MeshBasicMaterial({color: 0xff3300});
-        const engineFire1 = new THREE.Mesh(new THREE.ConeGeometry(0.5, 2, 8), engineFireMaterial);
-        engineFire1.position.set(-3.5, -0.5, 0);
-        engineFire1.rotation.z = -Math.PI / 2;
-        racerGroup.add(engineFire1);
-        
-        const engineFire2 = engineFire1.clone();
-        engineFire2.position.set(3.5, -0.5, 0);
-        racerGroup.add(engineFire2);
-        
-        // Connect engines with pod
-        const connector1Geometry = new THREE.BoxGeometry(1.5, 0.2, 0.2);
-        const connectorMaterial = new THREE.MeshStandardMaterial({
-            color: 0x999999,
-            roughness: 0.3,
-            metalness: 0.7
-        });
-        const connector1 = new THREE.Mesh(connector1Geometry, connectorMaterial);
-        connector1.position.set(-1, -0.5, 0);
-        racerGroup.add(connector1);
-        
-        const connector2 = connector1.clone();
-        connector2.position.set(1, -0.5, 0);
-        racerGroup.add(connector2);
-        
-        racerGroup.position.set(0, 1, 0);
-        scene.add(racerGroup);
-        
-        // Camera setup for racing
-        camera.position.set(0, 3, 8);
-        camera.lookAt(0, 1, -10);
-        racerGroup.add(camera);
-        
-        // Movement controls
-        const keys = {
-            a: false,
-            s: false,
-            d: false,
-            w: false,
-            ArrowUp: false,
-            ArrowDown: false,
-            ArrowLeft: false,
-            ArrowRight: false,
-            ' ': false
-        };
-        
-        document.addEventListener('keydown', (e) => {
-            if (keys.hasOwnProperty(e.key)) {
-                keys[e.key] = true;
-            }
-        });
-        
-        document.addEventListener('keyup', (e) => {
-            if (keys.hasOwnProperty(e.key)) {
-                keys[e.key] = false;
-            }
-        });
-        
-        // Physics variables
-        const physics = {
-            speed: 0,
-            maxSpeed: 2,
-            acceleration: 0.02,
-            deceleration: 0.01,
-            turnSpeed: 0.05,
-            boostSpeed: 3,
-            isBoost: false,
-            boostTime: 0,
-            maxBoostTime: 60,
-            boostCooldown: 0,
-            maxBoostCooldown: 180
-        };
-        
-        // Color shift variables
-        let colorShiftTime = 0;
-        
-        // Animation loop
-        function animate() {
-            requestAnimationFrame(animate);
-            
-            // Handle controls
-            const moveForward = keys.w || keys.ArrowUp;
-            const moveBackward = keys.s || keys.ArrowDown;
-            const moveLeft = keys.a || keys.ArrowLeft;
-            const moveRight = keys.d || keys.ArrowRight;
-            const boost = keys[' '];
-            
-            // Update speed
-            if (moveForward) {
-                physics.speed += physics.acceleration;
-                if (physics.speed > physics.maxSpeed) physics.speed = physics.maxSpeed;
-            } else if (moveBackward) {
-                physics.speed -= physics.acceleration * 1.5;
-                if (physics.speed < -physics.maxSpeed / 2) physics.speed = -physics.maxSpeed / 2;
-            } else {
-                if (physics.speed > 0) {
-                    physics.speed -= physics.deceleration;
-                    if (physics.speed < 0) physics.speed = 0;
-                } else if (physics.speed < 0) {
-                    physics.speed += physics.deceleration;
-                    if (physics.speed > 0) physics.speed = 0;
-                }
-            }
-            
-            // Handle boost
-            if (boost && physics.boostCooldown === 0 && !physics.isBoost) {
-                physics.isBoost = true;
-                physics.boostTime = physics.maxBoostTime;
-                
-                // Change engine fire color during boost
-                engineFire1.material.color.set(0x00ffff);
-                engineFire2.material.color.set(0x00ffff);
-            }
-            
-            if (physics.isBoost) {
-                physics.boostTime--;
-                if (physics.boostTime <= 0) {
-                    physics.isBoost = false;
-                    physics.boostCooldown = physics.maxBoostCooldown;
-                    
-                    // Change engine fire color back
-                    engineFire1.material.color.set(0xff3300);
-                    engineFire2.material.color.set(0xff3300);
-                }
-            }
-            
-            if (physics.boostCooldown > 0) {
-                physics.boostCooldown--;
-            }
-            
-            // Apply boost speed
-            const currentMaxSpeed = physics.isBoost ? physics.boostSpeed : physics.maxSpeed;
-            if (physics.speed > currentMaxSpeed) physics.speed = currentMaxSpeed;
-            
-            // Update racer position and rotation
-            racerGroup.position.z -= physics.speed;
-            
-            if (moveLeft) {
-                racerGroup.position.x -= physics.turnSpeed * physics.speed;
-                racerGroup.rotation.z = Math.min(racerGroup.rotation.z + 0.05, 0.3);
-            } else if (moveRight) {
-                racerGroup.position.x += physics.turnSpeed * physics.speed;
-                racerGroup.rotation.z = Math.max(racerGroup.rotation.z - 0.05, -0.3);
-            } else {
-                // Return to center rotation when not turning
-                if (racerGroup.rotation.z > 0) {
-                    racerGroup.rotation.z -= 0.02;
-                    if (racerGroup.rotation.z < 0) racerGroup.rotation.z = 0;
-                } else if (racerGroup.rotation.z < 0) {
-                    racerGroup.rotation.z += 0.02;
-                    if (racerGroup.rotation.z > 0) racerGroup.rotation.z = 0;
-                }
-            }
-            
-            // Limit racer position to track bounds
-            if (racerGroup.position.x < -14) racerGroup.position.x = -14;
-            if (racerGroup.position.x > 14) racerGroup.position.x = 14;
-            
-            // Floating animation for hexagon
-            hexagon.rotation.y += 0.01;
-            hexagon.position.y = 20 + Math.sin(Date.now() * 0.001) * 3;
-            
-            // Update color shift
-            colorShiftTime += 0.01;
-            
-            // Shift colors of cones and lights
-            cones.forEach((cone, i) => {
-                const vertexColors = cone.geometry.attributes.color;
-                for (let j = 0; j < vertexColors.count; j++) {
-                    const y = cone.geometry.attributes.position.getY(j);
-                    const h = (y / 10 + colorShiftTime + i * 0.01) % 1;
-                    const color = new THREE.Color().setHSL(h, 1, 0.5);
-                    vertexColors.setXYZ(j, color.r, color.g, color.b);
-                }
-                vertexColors.needsUpdate = true;
-            });
-            
-            // Loop the track when racer has gone too far
-            if (racerGroup.position.z < -1800) {
-                racerGroup.position.z = 0;
-            }
-            
-            // Update point lights
-            pointLights.forEach((light, i) => {
-                light.position.z = (light.position.z + 1) % 100 - 100;
-                const hue = (i / pointLights.length + colorShiftTime * 0.2) % 1;
-                light.color.setHSL(hue, 1, 0.5);
-            });
-            
-            // Update particles
-            particlesMesh.rotation.y += 0.0005;
-            
-            // Update engine fire size based on speed
-            const fireScale = 0.5 + physics.speed / physics.maxSpeed;
-            engineFire1.scale.set(fireScale, 1 + fireScale, fireScale);
-            engineFire2.scale.set(fireScale, 1 + fireScale, fireScale);
-            
-            renderer.render(scene, camera);
-        }
-        
-        animate();
-        
-        // Handle window resize
-        window.addEventListener('resize', () => {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
-        });
-    </script>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r132/three.min.js"></script>
+    <script src="course.js"></script>
+    <script src="main.js"></script>
 </body>
 </html>
-Made with
